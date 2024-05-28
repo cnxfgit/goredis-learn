@@ -22,6 +22,15 @@ func (h *Handler) Start() error {
 }
 
 func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
+	h.mu.Lock()
+	if h.closed.Load() {
+		h.mu.Unlock()
+		return
+	}
+
+	h.conns[conn] = struct{}{}
+	h.mu.Unlock()
+
 	h.handle(ctx, conn)
 }
 
@@ -39,13 +48,30 @@ func (h *Handler) handle(ctx context.Context, conn net.Conn) {
 }
 
 func (h *Handler) handleDroplet(ctx context.Context, conn io.ReadWriter, droplet *Droplet) error {
+	if droplet.Terminated() {
+		return droplet.Err
+	}
+	
 	multiReply, ok := droplet.Reply.(MultiReply)
 	if reply := h.db.Do(ctx, multiReply.Args()); reply != nil {
 		_, _ = conn.Write(reply.ToBytes())
+		return nil
 	}
 }
 
 func (h *Handler) Close() {
-	h.db.Close()
-	h.persister.Close()
+	h.Once.Do(func ()  {
+		h.closed.Store(true)
+		h.mu.RLock()
+		defer h.mu.RUnlock()
+
+		for conn := range h.conns {
+			if err := conn.Close; err != nil {
+				
+			}
+		}
+		h.conns = nil
+		h.db.Close()
+		h.persister.Close()
+	})
 }
