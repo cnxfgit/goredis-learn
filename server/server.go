@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
-	"goredis/pool"
-	"log"
+	"goredis/lib/pool"
+	"goredis/log"
 	"net"
 	"os"
 	"os/signal"
@@ -27,6 +27,14 @@ type Server struct {
 	handler  Handler
 	logger   log.Logger
 	stopc    chan struct{}
+}
+
+func NewServer(handler Handler, logger log.Logger) *Server {
+	return &Server{
+		handler: handler,
+		logger:  logger,
+		stopc:   make(chan struct{}),
+	}
 }
 
 func (s *Server) Serve(address string) error {
@@ -78,16 +86,19 @@ func (s *Server) listenAndServe(listener net.Listener, closec chan struct{}) {
 	pool.Submit(func() {
 		select {
 		case <-closec:
+			s.logger.Errorf("[server]server closing...")
 		case err := <-errc:
+			s.logger.Errorf("[server]server err: %s", err.Error())
 		}
 		cancel()
-
+		s.logger.Warnf("[server]server closing...")
 		s.handler.Close()
 		if err := listener.Close(); err != nil {
 			s.logger.Errorf("[server]server close listener err: %s", err.Error())
 		}
 	})
 
+	s.logger.Warnf("[server]server starting...")
 	var wg sync.WaitGroup
 	for {
 		conn, err := listener.Accept()

@@ -14,11 +14,11 @@ import (
 
 type Config struct {
 	Bind                    string `cfg:"bind"`
-	Port                    int    `cfg:port`
-	AppendOnly_             bool   `cfg:appendonly`
-	AppendFileName_         string `cfg:appendfilename`
-	AppendFsync_            string `cfg:appendfsync`
-	AutoAofRewriteAfterCmd_ int    `cfg:auto-aof-rewrite-after-cmds`
+	Port                    int    `cfg:"port"`
+	AppendOnly_             bool   `cfg:"appendonly"`
+	AppendFileName_         string `cfg:"appendfilename"`
+	AppendFsync_            string `cfg:"appendfsync"`
+	AutoAofRewriteAfterCmd_ int    `cfg:"auto-aof-rewrite-after-cmds"`
 }
 
 func (c *Config) Address() string {

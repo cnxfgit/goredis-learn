@@ -1,10 +1,17 @@
-package api
+package app
 
-import "goredis/log"
+import (
+	"goredis/log"
+	"goredis/persist"
+	"goredis/protocol"
+	"goredis/server"
+
+	"go.uber.org/dig"
+)
 
 var container = dig.New()
 
-func init()  {
+func init() {
 	// 配置加载
 	_ = container.Provide(SetUpConfig)
 	_ = container.Provide(PersistThinker)
