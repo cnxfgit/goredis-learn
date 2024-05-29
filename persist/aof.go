@@ -265,7 +265,7 @@ type Thinker interface {
 	AppendOnly() bool
 	AppendFileName() string
 	AppendFsync() string
-	autoAofRewriteAfterCmd() int
+	AutoAofRewriteAfterCmd() int
 }
 
 func newAofPersister(thinker Thinker) (handler.Persister, error) {
