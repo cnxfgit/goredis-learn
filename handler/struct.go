@@ -47,6 +47,10 @@ type DB interface {
 	Close()
 }
 
+type Reply interface {
+	ToBytes() []byte
+}
+
 
 type Executor interface {
 	Entrance() chan <- *Command
