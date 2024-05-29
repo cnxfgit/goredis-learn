@@ -1,5 +1,7 @@
 package api
 
+import "goredis/log"
+
 var container = dig.New()
 
 func init()  {

@@ -3,6 +3,7 @@ package persist
 import (
 	"context"
 	"goredis/handler"
+	"goredis/log"
 	"goredis/pool"
 	"io"
 	"os"

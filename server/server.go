@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"goredis/pool"
+	"log"
 	"net"
 	"os"
 	"os/signal"
