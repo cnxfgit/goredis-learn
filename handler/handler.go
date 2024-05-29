@@ -15,6 +15,10 @@ type Handler struct {
 func (h *Handler) Start() error {
 	// 加载持久化文件
 	reloader, err := h.persister.Reloader()
+	if err != nil {
+		return err
+	}
+	defer reloader.Close()
 
 	// 读取持久化文件内容，还原内存数据库
 	h.handle(SetLoadingPattern(context.Background()), newFakeReaderWriter(reloader))

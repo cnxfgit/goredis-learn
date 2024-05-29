@@ -11,10 +11,12 @@ import (
 	"time"
 )
 
-// 逻辑处理器
+// 处理器
 type Handler interface {
-	Start() error
+	Start() error // 启动 handler
+	// 处理到来的每一笔 tcp 连接
 	Handle(ctx context.Context, conn net.Conn)
+	// 关闭处理器
 	Close()
 }
 
@@ -22,6 +24,7 @@ type Server struct {
 	runOnce  sync.Once
 	stopOnce sync.Once
 	handler  Handler
+	logger   log.Logger
 	stopc    chan struct{}
 }
 
