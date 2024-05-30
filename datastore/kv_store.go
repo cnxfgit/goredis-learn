@@ -5,8 +5,6 @@ import (
 	"goredis/database"
 	"goredis/handler"
 	"goredis/lib"
-	"math"
-	"math/rand"
 	"strconv"
 	"strings"
 	"time"
@@ -197,317 +195,377 @@ func (k *KVStore) LPush(cmd *database.Command) handler.Reply {
 	return handler.NewIntReply(list.Len())
 }
 
-
-
-
-
-
-func (k *KVStore) getAsString(key string) (String, error) {
-	v, ok := k.data[key]
-
-	str, ok := v.(String)
-
-	return str, nil
-}
-
-func (k *KVStore) put(key, value string, insertStrategy bool) int64 {
-	if _, ok := k.data[key]; ok && insertStrategy {
-		return 0
-	}
-
-	k.data[key] = NewString(key, value)
-	return 1
-}
-
-func (k *KVStore) expire(key string, expireAt time.Time) {
-	if _, ok := k.data[key]; !ok {
-		return
-	}
-
-	k.expireAt[key] = expireAt
-	k.expireTimeWheel.Add(expireAt.Unix(), key)
-}
-
-func (k *KVStore) GC() {
-	nowUnix := lib.TimeNow().Unix()
-	for _, expiredKey := range k.expireTimeWheel.Range(0, nowUnix) {
-		k.expireProcess(expiredKey)
-	}
-}
-
-func (k *KVStore) expireProcess(key string) {
-	delete(k.expireAt, key)
-	delete(k.data, key)
-	k.expireTimeWheel.Rem(key)
-}
-
-func (k *KVStore) ExpirePreprocess(key string) {
-	expiredAt, ok := k.expireAt[key]
-	if !ok {
-		return
-	}
-
-	if expiredAt.After(lib.TimeNow()) {
-		return
-	}
-
-	k.expireProcess(key)
-}
-
-type String interface {
-	Bytes() []byte
-	database.CmdAdapter
-}
-
-type stringEntity struct {
-	key, str string
-}
-
-func (s *stringEntity) Bytes() []byte {
-	return []byte(s.str)
-}
-
-type List interface {
-	LPush(value []byte)
-	LPop(cnt int64) [][]byte
-	RPush(value []byte)
-	RPop(cnt int64) [][]byte
-	Len() int64
-	Range(start, stop int64) [][]byte
-	database.CmdAdapter
-}
-
-type listEntity struct {
-	key  string
-	data [][]byte
-}
-
-func (l *listEntity) LPush(value []byte) {
-	l.data = append([][]byte{value}, l.data...)
-}
-
-func (l *listEntity) RPop(cnt int64) [][]byte {
-	if int64(len(l.data)) < cnt {
-		return nil
-	}
-
-	poped := l.data[:cnt]
-	l.data = l.data[cnt:]
-	return poped
-}
-
-func (l *listEntity) Len() int64 {
-	return int64(len(l.data))
-}
-
-func (l *listEntity) Range(start, stop int64) [][]byte {
-	if stop == -1 {
-		stop = int64(len(l.data) - 1)
-	}
-
-	if start < 0 || start >= int64(len(l.data)) {
-		return nil
-	}
-
-	if stop < 0 || stop >= int64(len(l.data)) || stop < start {
-		return nil
-	}
-
-	return l.data[start : stop+1]
-}
-
-type Set interface {
-	Add(value string) int64
-	Exist(value string) int64
-	Rem(value string) int64
-	database.CmdAdapter
-}
-
-type setEntity struct {
-	key       string
-	container map[string]struct{}
-}
-
-func (s *setEntity) Add(value string) int64 {
-	if _, ok := s.container[value]; ok {
-		return 0
-	}
-	s.container[value] = struct{}{}
-	return 1
-}
-
-func (s *setEntity) Exist(value string) int64 {
-	if _, ok := s.container[value]; ok {
-		return 1
-	}
-	return 0
-}
-
-func (s *setEntity) Rem(value string) int64 {
-	if _, ok := s.container[value]; ok {
-		delete(s.container, value)
-		return 1
-	}
-	return 0
-}
-
-type HashMap interface {
-	Put(key string, value []byte)
-	Get(key string) []byte
-	Del(key string) int64
-	database.CmdAdapter
-}
-
-type hashMapEntity struct {
-	key  string
-	data map[string][]byte
-}
-
-func (h *hashMapEntity) Put(key string, value []byte) {
-	h.data[key] = value
-}
-
-func (h *hashMapEntity) Get(key string) []byte {
-	return h.data[key]
-}
-
-func (h *hashMapEntity) Del(key string) int64 {
-	if _, ok := h.data[key]; !ok {
-		return 0
-	}
-	delete(h.data, key)
-	return 1
-}
-
-type SortedSet interface {
-	Add(score int64, member string)
-	Rem(member string) int64
-	Range(score1, score2 int64) []string
-	database.CmdAdapter
-}
-
-type skiplist struct {
-	key           string
-	scoreToNode   map[int64]*skipnode
-	memberToScore map[string]int64
-	head          *skipnode
-	rander        *rand.Rand
-}
-
-type skipnode struct {
-	score   int64
-	members map[string]struct{}
-	nexts   []*skipnode
-}
-
-func (s *skiplist) Add(score int64, member string) {
-	oldScore, ok := s.memberToScore[member]
-	if ok {
-		if oldScore == score {
-			return
+func (k *KVStore) LPop(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	var cnt int64
+	if len(args) > 1 {
+		rawCnt, err := strconv.ParseInt(string(args[1]), 10, 64)
+		if err != nil {
+			return handler.NewSyntaxErrReply()
 		}
-		s.rem(oldScore, member)
-	}
-
-	s.memberToScore[member] = score
-	node, ok := s.scoreToNode[score]
-	if ok {
-		node.members[member] = struct{}{}
-		return
-	}
-
-	height := s.roll()
-	for int64(len(s.head.nexts)) < height+1 {
-		s.head.nexts = append(s.head.nexts, nil)
-	}
-
-	inserted := newSkipnode(score, height+1)
-	inserted.member[member] = struct{}{}
-	s.scoreToNode[score] = inserted
-
-	move := s.head
-	for i := height; i >= 0; i-- {
-		for move.nexts[i] != nil && move.nexts[i].score < score {
-			move = move.nexts[i]
-			continue
+		if rawCnt < 1 {
+			return handler.NewSyntaxErrReply()
 		}
-
-		inserted.nexts[i] = move.nexts[i]
-		move.nexts[i] = inserted
+		cnt = rawCnt
 	}
+
+	list, err := k.getAsList(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if list == nil {
+		return handler.NewNillReply()
+	}
+
+	if cnt == 0 {
+		cnt = 1
+	}
+
+	poped := list.LPop(cnt)
+	if poped == nil {
+		return handler.NewNillReply()
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+
+	if len(poped) == 1 {
+		return handler.NewBulkReply(poped[0])
+	}
+
+	return handler.NewMultiBulkReply(poped)
 }
 
-func (s *skiplist) roll() int64 {
-	var level int64
-	for s.rander.Intn(2) > 0 {
-		level++
+func (k *KVStore) RPush(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	list, err := k.getAsList(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
 	}
-	return level
+
+	if list == nil {
+		list = newListEntity(key, args[1:]...)
+		k.putAsList(key, list)
+		return handler.NewIntReply(list.Len())
+	}
+
+	for i := 1; i < len(args); i++ {
+		list.RPush(args[i])
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	return handler.NewIntReply(list.Len())
 }
 
-func (s *skiplist) Rem(member string) int64 {
-	score, ok := s.memberToScore[member]
-	if !ok {
-		return 0
+
+func (k *KVStore) RPop(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	var cnt int64
+	if len(args) > 1 {
+		rawCnt, err := strconv.ParseInt(string(args[1]), 10, 64)
+		if err != nil {
+			return handler.NewSyntaxErrReply()
+		}
+		if rawCnt < 1 {
+			return handler.NewSyntaxErrReply()
+		}
+		cnt = rawCnt
 	}
-	s.rem(score, member)
-	return 1
+
+	list, err := k.getAsList(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if list == nil {
+		return handler.NewNillReply()
+	}
+
+	if cnt == 0 {
+		cnt = 1
+	}
+
+	poped := list.RPop(cnt)
+	if poped == nil {
+		return handler.NewNillReply()
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	if len(poped) == 1 {
+		return handler.NewBulkReply(poped[0])
+	}
+
+	return handler.NewMultiBulkReply(poped)
 }
 
-func (s *skiplist) rem(score int64, member string) {
-	// 删除 member 与 score 的映射关系
-	delete(s.memberToScore, member)
-	// 获取 member 所从属的跳表节点
-	skipnode := s.scoreToNode[score]
-
-	delete(skipnode.members, member)
-	if len(skipnode.members) > 0 {
-		return
+func (k *KVStore) LRange(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args) != 3 {
+		return handler.NewSyntaxErrReply()
 	}
 
-	delete(s.scoreToNode, score)
-	move := s.head
-	for i := len(s.head.nexts) - 1; i >= 0; i-- {
-		for move.nexts[i] != nil && move.nexts[i].score < score {
-			move = move.nexts[i]
-		}
-
-		if move.nexts[i] == nil || move.nexts[i].score > score {
-			continue
-		}
-
-		remed := move.nexts[i]
-		move.nexts[i] = move.nexts[i].nexts[i]
-		remed.nexts[i] = nil
+	key := string(args[0])
+	start, err := strconv.ParseInt(string(args[1]), 10, 64)
+	if err != nil {
+		return handler.NewSyntaxErrReply()
 	}
+
+	stop, err := strconv.ParseInt(string(args[2]), 10, 64)
+	if err != nil {
+		return handler.NewSyntaxErrReply()
+	}
+
+	list, err := k.getAsList(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if list == nil {
+		return handler.NewNillReply()
+	}
+
+	if got := list.Range(start, stop); got != nil {
+		return handler.NewMultiBulkReply(got)
+	}
+
+	return handler.NewNillReply()
 }
 
-func (s *skiplist) Range(score1, score2 int64) []string {
-	if score2 == -1 {
-		score2 = math.MaxInt64
+func (k *KVStore) SAdd(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	set, err := k.getAsSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
 	}
 
-	if score1 > score2 {
-		return []string{}
+	if set == nil {
+		set = newSetEntity(key)
+		k.putAsSet(key, set)
 	}
 
-	move := s.head
-	for i := len(s.head.nexts) - 1; i >= 0; i-- {
-		for move.nexts[i] != nil && move.nexts[i].score < score1 {
-			move = move.nexts[i]
+	var added int64
+	for _, arg := range args[1:] {
+		added += set.Add(string(arg))
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	return handler.NewIntReply(added)
+}
+
+func (k *KVStore) SIsMember(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args) != 2 {
+		return handler.NewSyntaxErrReply()
+	}
+
+	key := string(args[0])
+	set, err := k.getAsSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if set == nil {
+		return handler.NewIntReply(0)
+	}
+
+	return handler.NewIntReply(set.Exist(string(args[1])))
+}
+
+func (k *KVStore) SRem(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	set, err := k.getAsSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if set == nil {
+		return handler.NewIntReply(0)
+	}
+
+	var remed int64
+	for _, arg := range args[1:] {
+		remed += set.Rem(string(arg))
+	}
+
+	if remed > 0 {
+		k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	}
+	return handler.NewIntReply(remed)
+}
+
+// hash
+func (k *KVStore) HSet(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args)&1 != 1 {
+		return handler.NewSyntaxErrReply()
+	}
+
+	key := string(args[0])
+	hmap, err := k.getAsHashMap(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if hmap == nil {
+		hmap = newHashMapEntity(key)
+		k.putAsHashMap(key, hmap)
+	}
+
+	for i := 0; i < len(args)-1; i += 2 {
+		hkey := string(args[i+1])
+		hvalue := args[i+2]
+		hmap.Put(hkey, hvalue)
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	return handler.NewIntReply(int64((len(args) - 1) >> 1))
+}
+
+func (k *KVStore) HGet(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	hmap, err := k.getAsHashMap(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if hmap == nil {
+		return handler.NewNillReply()
+	}
+
+	if v := hmap.Get(string(args[1])); v != nil {
+		return handler.NewBulkReply(v)
+	}
+
+	return handler.NewNillReply()
+}
+
+func (k *KVStore) HDel(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	hmap, err := k.getAsHashMap(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if hmap == nil {
+		return handler.NewIntReply(0)
+	}
+
+	var remed int64
+	for _, arg := range args[1:] {
+		remed += hmap.Del(string(arg))
+	}
+
+	if remed > 0 {
+		k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	}
+	return handler.NewIntReply(remed)
+}
+
+// sorted set
+func (k *KVStore) ZAdd(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args)&1 != 1 {
+		return handler.NewSyntaxErrReply()
+	}
+
+	key := string(args[0])
+	var (
+		scores  = make([]int64, 0, (len(args)-1)>>1)
+		members = make([]string, 0, (len(args)-1)>>1)
+	)
+
+	for i := 0; i < len(args)-1; i += 2 {
+		score, err := strconv.ParseInt(string(args[i+1]), 10, 64)
+		if err != nil {
+			return handler.NewSyntaxErrReply()
 		}
+
+		scores = append(scores, score)
+		members = append(members, string(args[i+2]))
 	}
 
-	if len(move.nexts) == 0 || move.nexts[0] == nil {
-		return []string{}
+	zset, err := k.getAsSortedSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
 	}
 
-	res := []string{}
-	for move.nexts[0] != nil && move.nexts[0].score >= score1 && move.nexts[0].score <= score2 {
-		for member := range move.nexts[0].members {
-			res = append(res, member)
-		}
-		move = move.nexts[0]
+	if zset == nil {
+		zset = newSkiplist(key)
+		k.putAsSortedSet(key, zset)
 	}
-	return res
+
+	for i := 0; i < len(scores); i++ {
+		zset.Add(scores[i], members[i])
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	return handler.NewIntReply(int64(len(scores)))
+}
+
+func (k *KVStore) ZRangeByScore(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args) < 3 {
+		return handler.NewSyntaxErrReply()
+	}
+
+	key := string(args[0])
+	score1, err := strconv.ParseInt(string(args[1]), 10, 64)
+	if err != nil {
+		return handler.NewSyntaxErrReply()
+	}
+	score2, err := strconv.ParseInt(string(args[2]), 10, 64)
+	if err != nil {
+		return handler.NewSyntaxErrReply()
+	}
+
+	zset, err := k.getAsSortedSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if zset == nil {
+		return handler.NewNillReply()
+	}
+
+	rawRes := zset.Range(score1, score2)
+	if len(rawRes) == 0 {
+		return handler.NewNillReply()
+	}
+
+	res := make([][]byte, 0, len(rawRes))
+	for _, item := range rawRes {
+		res = append(res, []byte(item))
+	}
+
+	return handler.NewMultiBulkReply(res)
+}
+
+func (k *KVStore) ZRem(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	zset, err := k.getAsSortedSet(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if zset == nil {
+		return handler.NewIntReply(0)
+	}
+
+	var remed int64
+	for _, arg := range args {
+		remed += zset.Rem(string(arg))
+	}
+
+	if remed > 0 {
+		k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd()) // 持久化
+	}
+	return handler.NewIntReply(remed)
 }

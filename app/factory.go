@@ -6,6 +6,8 @@ import (
 	"goredis/protocol"
 	"goredis/server"
 	"goredis/handler"
+	"goredis/datastore"
+	"goredis/database"
 
 	"go.uber.org/dig"
 )
@@ -35,4 +37,21 @@ func init() {
 
 	// 服务端运行层
 	_ = container.Provide(server.NewServer)
+}
+
+func ConstructServer() (*server.Server, error) {
+	var h server.Handler
+	if err := container.Invoke(func(_h server.Handler) {
+		h = _h
+	}); err != nil {
+		return nil, err
+	}
+
+	var l log.Logger
+	if err := container.Invoke(func(_l log.Logger) {
+		l = _l
+	}); err != nil {
+		return nil, err
+	}
+	return server.NewServer(h, l), nil
 }

@@ -56,7 +56,7 @@ type CmdAdapter interface {
 	ToCmd() [][]byte
 }
 
-type DBStore interface {
+type DataStore interface {
 	ForEach(task func(key string, adapter CmdAdapter, expireAt *time.Time))
 
 	ExpirePreprocess(key string)
