@@ -60,7 +60,7 @@ func (h *Handler) Handle(ctx context.Context, conn net.Conn) {
 	h.handle(ctx, conn)
 }
 
-func (h *Handler) handle(ctx context.Context, conn net.Conn) {
+func (h *Handler) handle(ctx context.Context, conn io.ReadWriter) {
 	// 借助 protocol parser 将到来的指令转而通过 stream channel 输出
 	stream := h.parser.ParseStream(conn)
 	for {
