@@ -65,7 +65,7 @@ func (h *Handler) handle(ctx context.Context, conn io.ReadWriter) {
 	stream := h.parser.ParseStream(conn)
 	for {
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			h.logger.Warnf("[handler]handle ctx err: %s", ctx.Err().Error())
 			return
 		case droplet := <-stream:
@@ -82,11 +82,18 @@ func (h *Handler) handleDroplet(ctx context.Context, conn io.ReadWriter, droplet
 		return droplet.Err
 	}
 
+	if droplet.Err != nil {
+		_, _ = conn.Write(droplet.Reply.ToBytes())
+		h.logger.Errorf("[handler]conn request, err: %s", droplet.Err.Error())
+		return nil
+	}
+
 	if droplet.Reply == nil {
 		h.logger.Errorf("[handler]conn empty request")
 		return nil
 	}
 
+	// 请求参数必须为 multiBulkReply 类型
 	multiReply, ok := droplet.Reply.(MultiReply)
 	if !ok {
 		h.logger.Errorf("[handler]conn invalid request: %s", droplet.Reply.ToBytes())
