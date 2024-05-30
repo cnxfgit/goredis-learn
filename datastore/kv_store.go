@@ -1,4 +1,4 @@
-package database
+package datastore
 
 import (
 	"context"
@@ -14,24 +14,85 @@ import (
 
 type KVStore struct {
 	data            map[string]interface{}
-	expireAt        map[string]time.Time
+	expiredAt       map[string]time.Time
 	expireTimeWheel SortedSet
 	persister       handler.Persister
+}
+
+func NewKVStore(persister handler.Persister) database.DataStore {
+	return &KVStore{
+		data:            make(map[string]interface{}),
+		expiredAt:       make(map[string]time.Time),
+		expireTimeWheel: newSkiplist("expireTimeWheel"),
+		persister:       persister,
+	}
+}
+
+func (k *KVStore) Expire(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	ttl, err := strconv.ParseInt(string(args[1]), 10, 64)
+	if err != nil {
+		return handler.NewSyntaxErrReply()
+	}
+
+	if ttl <= 0 {
+		return handler.NewErrReply("ERR invalid expire time")
+	}
+
+	expireAt := lib.TimeNow().Add(time.Duration(ttl) * time.Second)
+	_cmd := [][]byte{[]byte(database.CmdTypeExpireAt), []byte(key), []byte(lib.TimeSecondFormat(expireAt))}
+	return k.expireAt(cmd.Ctx(), _cmd, key, expireAt)
+}
+
+func (k *KVStore) ExpireAt(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	expiredAt, err := lib.ParseTimeSecondFormat(string(args[1]))
+	if err != nil {
+		return handler.NewSyntaxErrReply()
+	}
+	if expiredAt.Before(lib.TimeNow()) {
+		return handler.NewErrReply("ERR invalid expire time")
+	}
+	return k.expireAt(cmd.Ctx(), cmd.Cmd(), key, expiredAt)
+}
+
+func (k *KVStore) expireAt(ctx context.Context, cmd [][]byte, key string, expireAt time.Time) handler.Reply {
+	k.expire(key, expireAt)
+	k.persister.PersistCmd(ctx, cmd)
+	return handler.NewOKReply()
 }
 
 func (k *KVStore) Get(cmd *database.Command) handler.Reply {
 	args := cmd.Args()
 	key := string(args[0])
 	v, err := k.getAsString(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+	if v == nil {
+		return handler.NewNillReply()
+	}
 	return handler.NewBulkReply(v.Bytes())
 }
 
-func (k *KVStore) getAsString(key string) (String, error) {
-	v, ok := k.data[key]
+func (k *KVStore) MGet(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	res := make([][]byte, 0, len(args))
+	for _, arg := range args {
+		v, err := k.getAsString(string(arg))
+		if err != nil {
+			return handler.NewErrReply(err.Error())
+		}
+		if v == nil {
+			res = append(res, []byte("(nil)"))
+			continue
+		}
+		res = append(res, v.Bytes())
+	}
 
-	str, ok := v.(String)
-
-	return str, nil
+	return handler.NewMultiBulkReply(res)
 }
 
 func (k *KVStore) Set(cmd *database.Command) handler.Reply {
@@ -63,12 +124,18 @@ func (k *KVStore) Set(cmd *database.Command) handler.Reply {
 				return handler.NewSyntaxErrReply()
 			}
 			ttl, err := strconv.ParseInt(string(args[i+1]), 10, 64)
-			// ...
+			if err != nil {
+				return handler.NewSyntaxErrReply()
+			}
+			if ttl <= 0 {
+				return handler.NewErrReply("ERR invalid expire time")
+			}
 			ttlStrategy = true
 			ttlSeconds = ttl
 			ttlIndex = i
 			i++
-			// ...
+		default:
+			return handler.NewSyntaxErrReply()
 		}
 	}
 
@@ -95,6 +162,54 @@ func (k *KVStore) Set(cmd *database.Command) handler.Reply {
 	return handler.NewNillReply()
 }
 
+func (k *KVStore) MSet(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	if len(args)&1 == 1 {
+		return handler.NewSyntaxErrReply()
+	}
+
+	for i := 0; i < len(args); i += 2 {
+		_ = k.put(string(args[i]), string(args[i+1]), false)
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd())
+	return handler.NewIntReply(int64(len(args) >> 1))
+}
+
+func (k *KVStore) LPush(cmd *database.Command) handler.Reply {
+	args := cmd.Args()
+	key := string(args[0])
+	list, err := k.getAsList(key)
+	if err != nil {
+		return handler.NewErrReply(err.Error())
+	}
+
+	if list == nil {
+		list = newListEntity(key)
+		k.putAsList(key, list)
+	}
+
+	for i := 1; i < len(args); i++ {
+		list.LPush(args[i])
+	}
+
+	k.persister.PersistCmd(cmd.Ctx(), cmd.Cmd())
+	return handler.NewIntReply(list.Len())
+}
+
+
+
+
+
+
+func (k *KVStore) getAsString(key string) (String, error) {
+	v, ok := k.data[key]
+
+	str, ok := v.(String)
+
+	return str, nil
+}
+
 func (k *KVStore) put(key, value string, insertStrategy bool) int64 {
 	if _, ok := k.data[key]; ok && insertStrategy {
 		return 0
@@ -104,23 +219,7 @@ func (k *KVStore) put(key, value string, insertStrategy bool) int64 {
 	return 1
 }
 
-func (k *KVStore) Expire(cmd *database.Command) handler.Reply {
-	args := cmd.Args()
-	key := string(args[0])
-	ttl, err := strconv.ParseInt(string(args[1]), 10, 64)
-
-	expireAt := lib.TimeNow().Add(time.Duration(ttl) * time.Second)
-	_cmd := [][]byte{[]byte(database.CmdTypeExpireAt), []byte(key), []byte(lib.TimeSecondFormat(expireAt))}
-	return k.expireAt(cmd.Ctx(), _cmd, key, expireAt)
-}
-
-func (k *KVStore) ExpireAt(ctx context.Context, cmd [][]byte, key string,  expireAt time.Time) handler.Reply  {
-	k.expire(key, expireAt)
-	k.persister.PersistCmd(ctx, cmd)
-	return handler.NewOKReply()
-}
-
-func (k *KVStore) expire(key string, expireAt time.Time)  {
+func (k *KVStore) expire(key string, expireAt time.Time) {
 	if _, ok := k.data[key]; !ok {
 		return
 	}
@@ -129,20 +228,20 @@ func (k *KVStore) expire(key string, expireAt time.Time)  {
 	k.expireTimeWheel.Add(expireAt.Unix(), key)
 }
 
-func (k *KVStore) GC()  {
+func (k *KVStore) GC() {
 	nowUnix := lib.TimeNow().Unix()
 	for _, expiredKey := range k.expireTimeWheel.Range(0, nowUnix) {
 		k.expireProcess(expiredKey)
 	}
 }
 
-func (k *KVStore) expireProcess(key string)  {
+func (k *KVStore) expireProcess(key string) {
 	delete(k.expireAt, key)
 	delete(k.data, key)
 	k.expireTimeWheel.Rem(key)
 }
 
-func (k *KVStore) ExpirePreprocess(key string)  {
+func (k *KVStore) ExpirePreprocess(key string) {
 	expiredAt, ok := k.expireAt[key]
 	if !ok {
 		return
