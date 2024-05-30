@@ -25,6 +25,12 @@ type SimpleStringReply struct {
 	Str string
 }
 
+func NewSimpleStringReply(str string) *SimpleStringReply {
+	return &SimpleStringReply{
+		Str: str,
+	}
+}
+
 func (s *SimpleStringReply) ToBytes() []byte {
 	return []byte("+" + s.Str + CRLF)
 }
@@ -77,7 +83,6 @@ func (r *WrongTypeErrReply) ToBytes() []byte {
 func (r *WrongTypeErrReply) Error() string {
 	return "WRONGTYPE Operation against a key holding the wrong kind of value"
 }
-
 
 type ErrReply struct {
 	ErrStr string
