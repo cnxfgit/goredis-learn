@@ -5,6 +5,7 @@ import (
 	"goredis/persist"
 	"goredis/protocol"
 	"goredis/server"
+	"goredis/handler"
 
 	"go.uber.org/dig"
 )

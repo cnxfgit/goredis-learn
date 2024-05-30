@@ -1,45 +1,33 @@
 package handler
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"goredis/handler"
-	"goredis/pool"
 	"io"
+	"strings"
 )
 
-type Parser struct {
-	lineParser map[byte]lineParser
+var UnknownErrReplyBytes = []byte("-ERR unknown\r\n")
+
+type Reply interface {
+	ToBytes() []byte
 }
 
-func (p *Parser) ParseStream(reader io.Reader) <-chan *handler.Droplet {
-	ch := make(chan *handler.Droplet)
-	pool.Submit(func() {
-		p.parse(reader, ch)
-	})
-	return ch
+type MultiReply interface {
+	Reply
+	Args() [][]byte
 }
 
-func (p *Parser) parse(rawReader io.Reader, ch chan<-*handler.Droplet) {
-	reader := bufio.NewReader(rawReader)
-	for {
-		firstLine, err := reader.ReadBytes('\n')
+type Droplet struct {
+	Reply Reply
+	Err   error
+}
 
-		length := len(firstLine)
-		if length <= 2|| firstLine[length-1] != '\n' || firstLine[length-2] != '\r' {
-			continue
-		}
-
-		firstLine = bytes.TrimSuffix(firstLine, []byte{'\r', '\n'})
-		lineParseFunc, ok := p.lineParsers[firstLine[0]]
-		if !ok {
-			p.logger.Errorf("[parser] invalid line handler: %s", firstLine[0])
-			continue
-		}
-
-		ch <- lineParseFunc(firstLine, reader)
+func (d *Droplet) Terminated() bool {
+	if d.Err == io.EOF || d.Err == io.ErrUnexpectedEOF {
+		return true
 	}
+
+	return d.Err != nil && strings.Contains(d.Err.Error(), "use of closed network connection")
 }
 
 type DB interface {
@@ -47,13 +35,6 @@ type DB interface {
 	Close()
 }
 
-type Reply interface {
-	ToBytes() []byte
-}
-
-
-type Executor interface {
-	Entrance() chan <- *Command
-	ValidCommand(cmd CmdType) bool
-	Close()
+type Parser interface {
+	ParseStream(reader io.Reader) <-chan *Droplet
 }
